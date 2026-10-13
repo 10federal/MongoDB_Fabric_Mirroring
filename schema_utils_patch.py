@@ -24,33 +24,39 @@ UPSTREAM REF:
   Patched against commit as of 2026-10-12.
 """
 
-import json
 import logging
-import os
 
-import bson
-import bson.int64
 import numpy as np
 import pandas as pd
-from pandas.api.types import (
-    is_datetime64_any_dtype,
-    is_numeric_dtype,
-    is_object_dtype,
-    is_string_dtype,
-)
-
-# These imports come from the upstream app — they must be available at runtime.
-import schemas
-from constants import (
-    CONVERSION_LOG_FILE_NAME,
-    DTYPE_KEY,
-    TYPE_KEY,
-)
-from file_utils import FileType, append_to_file
-from push_file_to_lz import push_file_to_lz
-from utils import get_table_dir
+try:
+    import bson
+    import bson.int64
+except ImportError:
+    bson = None
 
 logger = logging.getLogger(__name__)
+
+# All upstream app imports are LAZY — loaded inside functions at first use.
+# This prevents import failures when the module is loaded at app startup
+# before the mirror thread has initialized its dependencies.
+
+_lazy_cache = {}
+
+
+def _lazy_import(name):
+    """Import a module lazily and cache it."""
+    if name not in _lazy_cache:
+        import importlib
+        _lazy_cache[name] = importlib.import_module(name)
+    return _lazy_cache[name]
+
+
+def _get_schemas():
+    return _lazy_import("schemas")
+
+
+def _get_DTYPE_KEY():
+    return _lazy_import("constants").DTYPE_KEY
 
 # ---------------------------------------------------------------------------
 # Re-import helpers from the original schema_utils that we call but do NOT
@@ -91,11 +97,11 @@ def enforce_schema_dtypes(table_name: str, df: pd.DataFrame) -> pd.DataFrame:
         if col_name == "_id":
             continue
 
-        schema_of_col = schemas.get_table_column_schema(table_name, col_name)
+        schema_of_col = _get_schemas().get_table_column_schema(table_name, col_name)
         if not schema_of_col:
             continue
 
-        expected_dtype = schema_of_col.get(DTYPE_KEY)
+        expected_dtype = schema_of_col.get(_get_DTYPE_KEY())
         if expected_dtype is None:
             continue
 
@@ -261,6 +267,9 @@ def _force_to_int64(series: pd.Series, col_name: str, table_name: str) -> pd.Ser
     Convert any series to nullable Int64.
 
     Handles float->int (only if integer-valued), string->int, bool->int,
+    bson types->int.
+
+    Note: bson imported lazily inside function.
     Decimal128->int. Non-integer floats and unparseable strings become pd.NA.
     """
     def _to_int(val):
