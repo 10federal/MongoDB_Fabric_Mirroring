@@ -1,6 +1,9 @@
 from flask import Flask
 from threading import Thread
 
+from schema_utils_patch import install_patch
+install_patch()
+
 from mongodb_generic_mirroring import mirror
 
 
